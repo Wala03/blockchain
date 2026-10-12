@@ -21,18 +21,43 @@ contract LandRegistry is ERC721, AccessControl, Pausable {
         string  metadataURI;   // CID IPFS (optionnel)
     }
 
+    // Une demande de vente en cours
+    struct TransferRequest {
+        address seller;
+        address buyer;
+        bool buyerAccepted;
+        bool notaryApproved;
+    }
+
     uint256 private _nextId = 1;
     mapping(uint256 => Parcel) private _parcels;
     mapping(bytes32 => bool) public refUsed;
     mapping(uint256 => address[]) private _history;
-    bool private _internalTransfer; // sera utilise par finalizeTransfer
+    mapping(uint256 => TransferRequest) private _transfers;
+    bool private _internalTransfer; // vrai seulement pendant finalizeTransfer
 
+    // ---------- Erreurs ----------
     error ParcelAlreadyRegistered(bytes32 parcelRef);
     error DirectTransferForbidden();
+    error NotParcelOwner();
+    error ParcelNotActive();
+    error ParcelNotInTransfer();
+    error InvalidBuyer();
+    error NoPendingTransfer();
+    error NotTheBuyer();
+    error BuyerHasNotAccepted();
+    error NotApprovedByNotary();
+    error NotAuthorizedForTransfer();
 
+    // ---------- Evenements ----------
     event ParcelRegistered(uint256 indexed tokenId, bytes32 indexed parcelRef, address indexed owner);
     event ParcelFrozen(uint256 indexed tokenId);
     event ParcelUnfrozen(uint256 indexed tokenId);
+    event TransferInitiated(uint256 indexed tokenId, address indexed seller, address indexed buyer);
+    event TransferAccepted(uint256 indexed tokenId, address indexed buyer);
+    event TransferApproved(uint256 indexed tokenId, address indexed notary);
+    event TransferFinalized(uint256 indexed tokenId, address indexed from, address indexed to);
+    event TransferCancelled(uint256 indexed tokenId);
 
     constructor() ERC721("LandTitle", "LAND") {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -79,6 +104,79 @@ contract LandRegistry is ERC721, AccessControl, Pausable {
         return _history[tokenId];
     }
 
+    function getTransfer(uint256 tokenId) external view returns (TransferRequest memory) {
+        return _transfers[tokenId];
+    }
+
+    // ---------- Transfert en plusieurs validations ----------
+
+    // 1) Le proprietaire propose la vente a un acheteur
+    function initiateTransfer(uint256 tokenId, address buyer) external whenNotPaused {
+        if (_ownerOf(tokenId) != msg.sender) revert NotParcelOwner();
+        if (_parcels[tokenId].status != Status.Active) revert ParcelNotActive();
+        if (buyer == address(0) || buyer == msg.sender) revert InvalidBuyer();
+
+        _parcels[tokenId].status = Status.InTransfer;
+        _transfers[tokenId] = TransferRequest(msg.sender, buyer, false, false);
+
+        emit TransferInitiated(tokenId, msg.sender, buyer);
+    }
+
+    // 2) L'acheteur designe accepte
+    function acceptTransfer(uint256 tokenId) external whenNotPaused {
+        TransferRequest storage t = _transfers[tokenId];
+        if (t.buyer == address(0)) revert NoPendingTransfer();
+        if (t.buyer != msg.sender) revert NotTheBuyer();
+        if (_parcels[tokenId].status != Status.InTransfer) revert ParcelNotInTransfer();
+
+        t.buyerAccepted = true;
+        emit TransferAccepted(tokenId, msg.sender);
+    }
+
+    // 3) Le notaire valide (apres l'acheteur)
+    function approveTransfer(uint256 tokenId) external onlyRole(NOTARY_ROLE) whenNotPaused {
+        TransferRequest storage t = _transfers[tokenId];
+        if (t.buyer == address(0)) revert NoPendingTransfer();
+        if (_parcels[tokenId].status != Status.InTransfer) revert ParcelNotInTransfer();
+        if (!t.buyerAccepted) revert BuyerHasNotAccepted();
+
+        t.notaryApproved = true;
+        emit TransferApproved(tokenId, msg.sender);
+    }
+
+    // 4) Finalisation : le certificat passe a l'acheteur
+    function finalizeTransfer(uint256 tokenId) external whenNotPaused {
+        TransferRequest memory t = _transfers[tokenId];
+        if (t.buyer == address(0)) revert NoPendingTransfer();
+        if (msg.sender != t.seller && !hasRole(NOTARY_ROLE, msg.sender)) revert NotAuthorizedForTransfer();
+        if (_parcels[tokenId].status != Status.InTransfer) revert ParcelNotInTransfer();
+        if (!t.buyerAccepted) revert BuyerHasNotAccepted();
+        if (!t.notaryApproved) revert NotApprovedByNotary();
+
+        delete _transfers[tokenId];
+        _parcels[tokenId].status = Status.Active;
+        _history[tokenId].push(t.buyer);
+
+        _internalTransfer = true;
+        _transfer(t.seller, t.buyer, tokenId);
+        _internalTransfer = false;
+
+        emit TransferFinalized(tokenId, t.seller, t.buyer);
+    }
+
+    // Annulation par le vendeur ou le notaire
+    function cancelTransfer(uint256 tokenId) external {
+        TransferRequest memory t = _transfers[tokenId];
+        if (t.buyer == address(0)) revert NoPendingTransfer();
+        if (msg.sender != t.seller && !hasRole(NOTARY_ROLE, msg.sender)) revert NotAuthorizedForTransfer();
+
+        delete _transfers[tokenId];
+        if (_parcels[tokenId].status == Status.InTransfer) {
+            _parcels[tokenId].status = Status.Active;
+        }
+        emit TransferCancelled(tokenId);
+    }
+
     // ---------- Gel et pause ----------
     function freezeParcel(uint256 tokenId) external onlyRole(AUTHORITY_ROLE) {
         _requireOwned(tokenId);
@@ -88,7 +186,10 @@ contract LandRegistry is ERC721, AccessControl, Pausable {
 
     function unfreezeParcel(uint256 tokenId) external onlyRole(AUTHORITY_ROLE) {
         _requireOwned(tokenId);
-        _parcels[tokenId].status = Status.Active;
+        // si une vente etait en cours, on la reprend ; sinon la parcelle redevient active
+        _parcels[tokenId].status = _transfers[tokenId].buyer != address(0)
+            ? Status.InTransfer
+            : Status.Active;
         emit ParcelUnfrozen(tokenId);
     }
 
