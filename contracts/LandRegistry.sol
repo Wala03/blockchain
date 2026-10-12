@@ -35,6 +35,48 @@ contract LandRegistry is ERC721, AccessControl, Pausable {
     mapping(uint256 => address[]) private _history;
     mapping(uint256 => TransferRequest) private _transfers;
     bool private _internalTransfer; // vrai seulement pendant finalizeTransfer
+    
+    // ---------- Partage d'acces aux donnees ----------
+    // Table : parcelle -> numero du proprietaire -> personne -> date de fin d'acces
+    // (le numero du proprietaire change a chaque vente : les anciens acces tombent)
+    mapping(uint256 => mapping(uint256 => mapping(address => uint64))) private _accessUntil;
+
+    error InvalidGrantee();
+    error InvalidExpiry();
+
+    event AccessGranted(uint256 indexed tokenId, address indexed grantee, uint64 expiry);
+    event AccessRevoked(uint256 indexed tokenId, address indexed grantee);
+
+    // Le proprietaire donne un acces limite dans le temps
+    function grantAccess(uint256 tokenId, address grantee, uint64 expiry) external whenNotPaused {
+        if (_ownerOf(tokenId) != msg.sender) revert NotParcelOwner();
+        if (grantee == address(0) || grantee == msg.sender) revert InvalidGrantee();
+        if (expiry <= block.timestamp) revert InvalidExpiry();
+
+        _accessUntil[tokenId][_history[tokenId].length][grantee] = expiry;
+        emit AccessGranted(tokenId, grantee, expiry);
+    }
+
+    // Le proprietaire retire l'acces
+    function revokeAccess(uint256 tokenId, address grantee) external {
+        if (_ownerOf(tokenId) != msg.sender) revert NotParcelOwner();
+        delete _accessUntil[tokenId][_history[tokenId].length][grantee];
+        emit AccessRevoked(tokenId, grantee);
+    }
+
+    // Cette personne a-t-elle le droit de consulter le dossier ?
+    function hasAccess(uint256 tokenId, address who) public view returns (bool) {
+        address currentOwner = _ownerOf(tokenId);
+        if (currentOwner == address(0)) return false;
+        if (who == currentOwner) return true;
+        if (hasRole(REGISTRAR_ROLE, who) || hasRole(AUTHORITY_ROLE, who)) return true;
+        return _accessUntil[tokenId][_history[tokenId].length][who] > block.timestamp;
+    }
+
+    // Date de fin de l'acces d'une personne (0 = aucun acces accorde)
+    function accessExpiry(uint256 tokenId, address who) external view returns (uint64) {
+        return _accessUntil[tokenId][_history[tokenId].length][who];
+    }
 
     // ---------- Erreurs ----------
     error ParcelAlreadyRegistered(bytes32 parcelRef);
