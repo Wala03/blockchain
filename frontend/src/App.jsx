@@ -13,6 +13,7 @@ import {
   ETHERSCAN_URL,
 } from "./lib/wallet";
 import Register from "./pages/Register";
+import Parcels from "./pages/Parcels";
 
 const ROLE_LABELS = {
   DEFAULT_ADMIN_ROLE: "Administrateur",
@@ -24,6 +25,7 @@ const ROLE_LABELS = {
 // Les pages du site : on en ajoutera une ligne par nouvelle page
 const PAGES = [
   { id: "home", label: "Accueil" },
+  { id: "parcels", label: "Mes titres" },
   { id: "register", label: "Enregistrer" },
 ];
 
@@ -211,6 +213,7 @@ export default function App() {
             </div>
           )}
 
+          {page === "parcels" && <Parcels session={session} roles={roles} />}
           {page === "register" && <Register session={session} roles={roles} />}
         </>
       )}

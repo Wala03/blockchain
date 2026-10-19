@@ -5,6 +5,7 @@ import deployment from "../contract/LandRegistry.json";
 export const SEPOLIA_CHAIN_ID = 11155111;
 export const SEPOLIA_CHAIN_HEX = "0xaa36a7";
 export const CONTRACT_ADDRESS = deployment.address;
+console.log("CONTRACT_ADDRESS =", CONTRACT_ADDRESS);
 export const ABI = deployment.abi;
 export const ETHERSCAN_URL = "https://sepolia.etherscan.io";
 
